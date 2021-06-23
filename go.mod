@@ -7,4 +7,5 @@ require (
 	github.com/tidwall/buntdb v1.2.4 // indirect
 	github.com/tidwall/gjson v1.8.0 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/uniplaces/carbon v0.1.6 // indirect
 )
