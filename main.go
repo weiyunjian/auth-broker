@@ -68,7 +68,6 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
     fmt.Println("Connected")
-    syncNasClients()
 }
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
@@ -92,6 +91,7 @@ func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
     db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
+    syncNasClients()
     c := cron.New(cron.WithSeconds())
     c.AddFunc("0 */30 * * * ?", syncNasClients)
     c.AddFunc("0 */" + execute_interval_min + " * * * ?", checkDeviceAuthStatus)
@@ -147,8 +147,8 @@ func syncNasClients() {
         fmt.Println("auth error")
         os.Exit(1)
     }
-    req.Header.Set("identifier", nas_identifier)
-    req.Header.Set("access_key", nas_access_key)
+    req.Header.Set("Identifier", nas_identifier)
+    req.Header.Set("Access-Key", nas_access_key)
     resp, err := http.DefaultClient.Do(req)
     resBody, _ := ioutil.ReadAll(resp.Body)
     res := gjson.ParseBytes(resBody)
