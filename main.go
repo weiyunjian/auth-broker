@@ -30,11 +30,6 @@ var (
     db, _ = buntdb.Open(":memory:")
 )
 
-type LoginRes struct {
-    ErrMsg   string  `json:"ErrMsg"`
-    Result   int  `json:"Result"`
-}
-
 type Device struct {
     Auth bool
     Online bool
@@ -155,10 +150,7 @@ func syncNasClients() {
     req.Header.Set("identifier", nas_identifier)
     req.Header.Set("access_key", nas_access_key)
     resp, err := http.DefaultClient.Do(req)
-
-
     resBody, _ := ioutil.ReadAll(resp.Body)
-
     res := gjson.ParseBytes(resBody)
 
     if res.Get("code").Int() == 200 {
@@ -207,16 +199,16 @@ func getRouterSessKey() string {
         "username": nas_http_username,
     }
     jsonValue, _ := json.Marshal(values)
-    res, _ := http.Post(nas_http_endpoint + "/Action/login", "application/json", bytes.NewBuffer(jsonValue))
-    loginRes := LoginRes{}
-    json.NewDecoder(res.Body).Decode(&loginRes)
+    resp, _ := http.Post(nas_http_endpoint + "/Action/login", "application/json", bytes.NewBuffer(jsonValue))
+    resBody, _ := ioutil.ReadAll(resp.Body)
+    res := gjson.ParseBytes(resBody)
 
-    if loginRes.Result != 10000 {
+    if res.Get("Result").Int() != 10000 {
         fmt.Println("nas password wrong.")
         os.Exit(1)
     }
 
-    for _, cookie := range res.Cookies() {
+    for _, cookie := range resp.Cookies() {
         if cookie.Name == "sess_key" {
             sess_key = cookie.Value
         }
@@ -252,8 +244,8 @@ func syncRouterOnlineDevices() {
     }
 
     resBody, _ := ioutil.ReadAll(resp.Body)
-
     res := gjson.ParseBytes(resBody)
+
     if res.Get("Result").Int() == 30000 {
         res.Get("Data.data").ForEach(func(key, value gjson.Result) bool {
             db.Update(func(tx *buntdb.Tx) error {
@@ -301,7 +293,6 @@ func syncRouterAuthUsers() {
     }
 
     resBody, _ := ioutil.ReadAll(resp.Body)
-
     res := gjson.ParseBytes(resBody)
 
     if res.Get("Result").Int() == 30000 {
