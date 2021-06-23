@@ -46,6 +46,7 @@ type Device struct {
     IP string
     Mac string
     Password string
+    ExpiredAt string
 }
 
 var wg sync.WaitGroup
@@ -79,8 +80,8 @@ func md5Value(str string) string  {
 func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
-    syncNasClients()
-    // auth("15990755501", "123123", "192.168.2.100", "18:3e:ef:cb:80:48")
+    db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
+    checkDeviceAuthStatus()
 	wg.Add(1)
     opts := mqtt.NewClientOptions()
     opts.AddBroker(fmt.Sprintf("tcp://%s:%d", "mqtt.weiyunjian.com", 1883))
@@ -123,6 +124,7 @@ func auth(username string, password string, ip string, mac string) {
     q.Add("fail", "https://www.baidu.com/")
     req.URL.RawQuery = q.Encode()
     http.DefaultClient.Do(req)
+    fmt.Printf("auth user: %s\n", username)
 }
 
 func syncNasClients() {
@@ -144,20 +146,12 @@ func syncNasClients() {
         res.Get("data").ForEach(func(key, value gjson.Result) bool {
             value.Get("mac").ForEach(func(key2, mac gjson.Result) bool {
                 db.Update(func(tx *buntdb.Tx) error {
-                    var Authed bool = false
-                    var Onlined bool = false
-                    existValue, _ := tx.Get(mac.String())
-                    if len(existValue) > 0 {
-                        Authed = gjson.Get(existValue, "Auth").Bool()
-                        Onlined = gjson.Get(existValue, "Online").Bool()
-                    }
                     expiredAt, _ := carbon.Parse(carbon.DefaultFormat, value.Get("expired_at").String(), "Asia/Shanghai")
                     device := Device{
-                        Auth: Authed,
-                        Online: Onlined,
                         Name: value.Get("name").String(),
                         Mac: mac.String(),
                         Password: value.Get("password").String(),
+                        ExpiredAt: value.Get("expired_at").String(),
                     }
                     jsonData, _ := json.Marshal(device)
                     tx.Set(mac.String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
@@ -241,11 +235,21 @@ func syncRouterOnlineDevices() {
     resBody, _ := ioutil.ReadAll(resp.Body)
 
     res := gjson.ParseBytes(resBody)
-
     if res.Get("Result").Int() == 30000 {
         res.Get("Data.data").ForEach(func(key, value gjson.Result) bool {
-            fmt.Println(value.String()) 
-            fmt.Println(value.Get("mac")) 
+            db.Update(func(tx *buntdb.Tx) error {
+                existValue, _ := tx.Get(value.Get("mac").String())
+                if len(existValue) > 0 {
+                    device := Device{}
+                    json.Unmarshal([]byte(existValue), &device)
+                    device.Online = true
+                    device.IP = value.Get("ip_addr").String()
+                    expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
+                    jsonData, _ := json.Marshal(device)
+                    tx.Set(value.Get("mac").String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+                }
+                return nil
+            })
             return true // keep iterating
         })
     } else if res.Get("Result").Int() == 10014 {
@@ -283,8 +287,18 @@ func syncRouterAuthUsers() {
 
     if res.Get("Result").Int() == 30000 {
         res.Get("Data.data").ForEach(func(key, value gjson.Result) bool {
-            fmt.Println(value.String()) 
-            fmt.Println(value.Get("mac"))
+            db.Update(func(tx *buntdb.Tx) error {
+                existValue, _ := tx.Get(value.Get("mac").String())
+                if len(existValue) > 0 {
+                    device := Device{}
+                    json.Unmarshal([]byte(existValue), &device)
+                    device.Auth = true
+                    expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
+                    jsonData, _ := json.Marshal(device)
+                    tx.Set(value.Get("mac").String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+                }
+                return nil
+            })
             return true // keep iterating
         })
     } else if res.Get("Result").Int() == 10014 {
@@ -292,4 +306,39 @@ func syncRouterAuthUsers() {
         sess_key = ""
         syncRouterAuthUsers()
     }
+}
+
+func checkDeviceAuthStatus() {
+    syncNasClients()
+    db.Update(func(tx *buntdb.Tx) error {
+        tx.Ascend("", func(key, value string) bool {
+            device := Device{}
+            json.Unmarshal([]byte(value), &device)
+            device.Online = false
+            device.Auth = false
+            expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
+            jsonData, _ := json.Marshal(device)
+            tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+            return true
+        })
+        return nil
+    })
+    syncRouterOnlineDevices()
+    syncRouterAuthUsers()
+    db.Update(func(tx *buntdb.Tx) error {
+        tx.Ascend("", func(key, value string) bool {
+            device := Device{}
+            json.Unmarshal([]byte(value), &device)
+            if device.Online && !device.Auth && len(device.IP) > 0 {
+                auth(device.Name, device.Password, device.IP, device.Mac)
+                device.Auth = true
+                expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
+                jsonData, _ := json.Marshal(device)
+                tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+            }
+            fmt.Printf("key: %s, value: %s\n", key, value)
+            return true
+        })
+        return nil
+    })
 }
