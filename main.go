@@ -96,6 +96,7 @@ func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
     db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
+    syncNasClients()
     c := cron.New(cron.WithSeconds())
     c.AddFunc("0 */30 * * * ?", syncNasClients)
     c.AddFunc("0 */" + execute_interval_min + " * * * ?", checkDeviceAuthStatus)
