@@ -68,6 +68,7 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
     fmt.Println("Connected")
+    syncNasClients()
 }
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
@@ -91,7 +92,6 @@ func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
     db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
-    syncNasClients()
     c := cron.New(cron.WithSeconds())
     c.AddFunc("0 */30 * * * ?", syncNasClients)
     c.AddFunc("0 */" + execute_interval_min + " * * * ?", checkDeviceAuthStatus)
