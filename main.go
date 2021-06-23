@@ -15,6 +15,7 @@ import (
     "github.com/tidwall/gjson"
     "github.com/tidwall/buntdb"
     "github.com/uniplaces/carbon"
+    "github.com/robfig/cron/v3"
     "io/ioutil"
 )
 
@@ -24,15 +25,10 @@ var (
 	nas_http_endpoint = os.Getenv("NAS_HTTP_ENDPOINT")
 	nas_http_username = os.Getenv("NAS_HTTP_USERNAME")
 	nas_http_password = os.Getenv("NAS_HTTP_PASSWORD")
+	execute_interval_min = getEnv("EXECUTE_INTERVAL_MIN", "1")
     sess_key = ""
     db, _ = buntdb.Open(":memory:")
 )
-
-type Message struct {
-	name string `json:"name"`
-	password string `json:"password"`
-    macs map[string][]string `json:"macs"`
-}
 
 type LoginRes struct {
     ErrMsg   string  `json:"ErrMsg"`
@@ -53,14 +49,26 @@ var wg sync.WaitGroup
 
 var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 	// json_marshall and go to get user password by name nas_identifier + appkey password
-    fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
-    message := Message{}
-    jsonErr := json.Unmarshal([]byte(msg.Payload()), &message)
-	if jsonErr != nil {
-		fmt.Println(jsonErr)
-	}
+    res := gjson.Parse(string(msg.Payload()))
+    fmt.Println(res)
 
-	fmt.Println(message)
+    res.Get("mac").ForEach(func(key, mac gjson.Result) bool {
+        db.Update(func(tx *buntdb.Tx) error {
+            expiredAt, _ := carbon.Parse(carbon.DefaultFormat, res.Get("expired_at").String(), "Asia/Shanghai")
+            device := Device{
+                Name: res.Get("name").String(),
+                Mac: mac.String(),
+                Password: res.Get("password").String(),
+                ExpiredAt: res.Get("expired_at").String(),
+            }
+            jsonData, _ := json.Marshal(device)
+            tx.Set(mac.String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+            // fmt.Printf("add mac: %s\n", mac.String())
+            return nil
+        })
+        return true // keep iterating
+    })
+    fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
 }
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
@@ -69,6 +77,13 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
     fmt.Printf("Connect lost: %v", err)
+}
+
+func getEnv(key, fallback string) string {
+    if value, ok := os.LookupEnv(key); ok {
+        return value
+    }
+    return fallback
 }
 
 func md5Value(str string) string  {
@@ -81,11 +96,14 @@ func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
     db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
-    checkDeviceAuthStatus()
+    c := cron.New(cron.WithSeconds())
+    c.AddFunc("0 */30 * * * ?", syncNasClients)
+    c.AddFunc("0 */" + execute_interval_min + " * * * ?", checkDeviceAuthStatus)
+    c.Start()
 	wg.Add(1)
     opts := mqtt.NewClientOptions()
     opts.AddBroker(fmt.Sprintf("tcp://%s:%d", "mqtt.weiyunjian.com", 1883))
-    opts.SetClientID("go_mqtt_client")
+    opts.SetClientID(nas_identifier)
     opts.SetUsername(nas_identifier)
     opts.SetPassword(nas_access_key)
     opts.SetDefaultPublishHandler(messagePubHandler)
@@ -309,7 +327,6 @@ func syncRouterAuthUsers() {
 }
 
 func checkDeviceAuthStatus() {
-    syncNasClients()
     db.Update(func(tx *buntdb.Tx) error {
         tx.Ascend("", func(key, value string) bool {
             device := Device{}
@@ -336,9 +353,10 @@ func checkDeviceAuthStatus() {
                 jsonData, _ := json.Marshal(device)
                 tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
             }
-            fmt.Printf("key: %s, value: %s\n", key, value)
+            // fmt.Printf("key: %s, value: %s\n", key, value)
             return true
         })
         return nil
     })
+    fmt.Printf("complete check device auth status\n")
 }
