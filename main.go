@@ -153,6 +153,8 @@ func syncNasClients() {
     resBody, _ := ioutil.ReadAll(resp.Body)
     res := gjson.ParseBytes(resBody)
 
+    fmt.Printf("complete fetch from weiyunjian, code %s\n", res.Get("code").String())
+
     if res.Get("code").Int() == 200 {
         res.Get("data").ForEach(func(key, value gjson.Result) bool {
             value.Get("mac").ForEach(func(key2, mac gjson.Result) bool {
@@ -180,7 +182,7 @@ func syncNasClients() {
         //     })
         //     return nil
 	    // })
-        fmt.Println("complete sync macs from weiyunjian") 
+        fmt.Println("complete sync macs from weiyunjian")
     } else if res.Get("code").Int() == 42207 {
         fmt.Println("nas identifier or access_key wrong.")
         os.Exit(1)
