@@ -17,6 +17,7 @@ import (
     "github.com/uniplaces/carbon"
     "github.com/robfig/cron/v3"
     "io/ioutil"
+    "log"
 )
 
 var (
@@ -45,7 +46,7 @@ var wg sync.WaitGroup
 var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 	// json_marshall and go to get user password by name nas_identifier + appkey password
     res := gjson.Parse(string(msg.Payload()))
-    fmt.Println(res)
+    log.Println("[mqtt][200]received msg: ",res)
 
     res.Get("mac").ForEach(func(key, mac gjson.Result) bool {
         db.Update(func(tx *buntdb.Tx) error {
@@ -58,20 +59,20 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
             }
             jsonData, _ := json.Marshal(device)
             tx.Set(mac.String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
-            // fmt.Printf("add mac: %s\n", mac.String())
+            // log.Println("add mac: %s\n", mac.String())
             return nil
         })
         return true // keep iterating
     })
-    fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
+    // log.Println("Received message: %s from topic: %s", msg.Payload(), msg.Topic())
 }
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-    fmt.Println("Connected")
+    log.Println("[mqtt][200]Connected")
 }
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-    fmt.Printf("Connect lost: %v", err)
+    log.Println("[mqtt][500]Connect lost: ", err)
 }
 
 func getEnv(key, fallback string) string {
@@ -113,7 +114,7 @@ func main() {
     sub(client)
 
 	wg.Wait() //表示main goroutine进入等待，意味着阻塞
-    fmt.Println("disconnected")
+    log.Println("[mqtt][500]Disconnected")
     defer db.Close()
 }
 
@@ -126,7 +127,7 @@ func sub(client mqtt.Client) {
 func auth(username string, password string, ip string, mac string) {
     req, err := http.NewRequest("GET", "https://portal.ikuai8-wifi.com/webradius", nil)
     if err != nil {
-        fmt.Println("auth error")
+        log.Println("[local][500]Init Request Error")
         os.Exit(1)
     }
     q := req.URL.Query()
@@ -138,13 +139,13 @@ func auth(username string, password string, ip string, mac string) {
     q.Add("fail", "https://www.baidu.com/")
     req.URL.RawQuery = q.Encode()
     http.DefaultClient.Do(req)
-    fmt.Printf("auth user: %s\n", username)
+    log.Printf("[local][200]Auth User: %s, Mac: %s, IP: %s\n", username, mac, ip)
 }
 
 func syncNasClients() {
     req, err := http.NewRequest("GET", "https://api-manage-radius.ik.weiyunjian.com/callback/client", nil)
     if err != nil {
-        fmt.Println("auth error")
+        log.Println("[local][500]Init Request Error")
         os.Exit(1)
     }
     req.Header.Set("Identifier", nas_identifier)
@@ -153,7 +154,7 @@ func syncNasClients() {
     resBody, _ := ioutil.ReadAll(resp.Body)
     res := gjson.ParseBytes(resBody)
 
-    fmt.Printf("complete fetch from weiyunjian, code %s\n", res.Get("code").String())
+    log.Printf("[weiyunjian][%s]Fetch Users\n", res.Get("code").String())
 
     if res.Get("code").Int() == 200 {
         res.Get("data").ForEach(func(key, value gjson.Result) bool {
@@ -175,16 +176,16 @@ func syncNasClients() {
             return true
         })
         // db.View(func(tx *buntdb.Tx) error {
-        //     fmt.Println("Order by Mac")
+        //     log.Println("Order by Mac")
         //     tx.Ascend("Mac", func(key, value string) bool {
-        //         fmt.Printf("%s: %s\n", key, value)
+        //         log.Println("%s: %s\n", key, value)
         //         return true
         //     })
         //     return nil
 	    // })
-        fmt.Println("complete sync macs from weiyunjian")
+        log.Println("[local][200]Sync Mac To DB")
     } else if res.Get("code").Int() == 42207 {
-        fmt.Println("nas identifier or access_key wrong.")
+        log.Println("[weiyunjian][422]Nas Identifier/AccessKey Wrong")
         os.Exit(1)
     }
 }
@@ -206,7 +207,7 @@ func getRouterSessKey() string {
     res := gjson.ParseBytes(resBody)
 
     if res.Get("Result").Int() != 10000 {
-        fmt.Println("nas password wrong.")
+        log.Println("[local][422]Web Password Wrong")
         os.Exit(1)
     }
 
@@ -217,7 +218,7 @@ func getRouterSessKey() string {
     }
 
     if sess_key == "" {
-        fmt.Println("nas login error.")
+        log.Println("[local][500]Nas Login Fail.")
         os.Exit(1)
     }
     
@@ -266,7 +267,7 @@ func syncRouterOnlineDevices() {
             return true // keep iterating
         })
     } else if res.Get("Result").Int() == 10014 {
-        fmt.Println("login expired, retry")
+        log.Println("[local][401]Web Login Token Expired, Retry")
         sess_key = ""
         syncRouterOnlineDevices()
     }
@@ -314,7 +315,7 @@ func syncRouterAuthUsers() {
             return true // keep iterating
         })
     } else if res.Get("Result").Int() == 10014 {
-        fmt.Println("login expired, retry")
+        log.Println("[local][401]Web Login Token Expired, Retry")
         sess_key = ""
         syncRouterAuthUsers()
     }
@@ -347,10 +348,10 @@ func checkDeviceAuthStatus() {
                 jsonData, _ := json.Marshal(device)
                 tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
             }
-            // fmt.Printf("key: %s, value: %s\n", key, value)
+            // log.Println("key: %s, value: %s\n", key, value)
             return true
         })
         return nil
     })
-    fmt.Printf("complete check device auth status\n")
+    log.Println("[local][200]Complete Check Auth Status")
 }
