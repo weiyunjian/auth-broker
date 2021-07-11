@@ -48,6 +48,25 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
     res := gjson.Parse(string(msg.Payload()))
     log.Println("[mqtt][200]received msg: ",res)
 
+    // 先找到所有关于这个用户的mac，全部清理掉
+    db.Update(func(tx *buntdb.Tx) error {
+        tx.AscendEqual("Name", fmt.Sprintf(`{"Name":"%s"}`, res.Get("name").String()), func(key, value string) bool {
+            macMatched := false
+            res.Get("mac").ForEach(func(innerKey, mac gjson.Result) bool {
+                if mac.String() == key {
+                    macMatched = true
+                }
+                return true
+            })
+            if macMatched == false {
+                tx.Delete(key)
+                kickMac(key)
+            }
+            return true
+        })
+        return nil
+    })
+
     res.Get("mac").ForEach(func(key, mac gjson.Result) bool {
         db.Update(func(tx *buntdb.Tx) error {
             expiredAt, _ := carbon.Parse(carbon.DefaultFormat, res.Get("expired_at").String(), "Asia/Shanghai")
@@ -92,6 +111,7 @@ func main() {
     db.CreateIndex("Mac", "*", buntdb.IndexJSON("Mac"))
     db.CreateIndex("Auth", "*", buntdb.IndexJSON("Auth"))
     db.CreateIndex("Online", "*", buntdb.IndexJSON("Online"))
+    db.CreateIndex("Name", "*", buntdb.IndexJSON("Name"))
     syncNasClients()
     c := cron.New(cron.WithSeconds())
     c.AddFunc("0 */30 * * * ?", syncNasClients)
@@ -270,6 +290,57 @@ func syncRouterOnlineDevices() {
         log.Println("[local][401]Web Login Token Expired, Retry")
         sess_key = ""
         syncRouterOnlineDevices()
+    }
+}
+
+func kickMac(mac string) {
+    values := map[string]interface{}{
+        "action": "show",
+        "func_name": "ppp_online",
+        "param": map[string]string{
+            "FINDS": "username,name,ip_addr,mac,phone,comment",
+            "KEYWORDS": mac,
+            "ORDER": "asc",
+            "ORDER_BY": "auth_time",
+            "TYPE": "data,total",
+            "limit": "0,100000",
+        },
+    }
+    jsonValue, _ := json.Marshal(values)
+    req, _ := http.NewRequest("POST", nas_http_endpoint + "/Action/call", bytes.NewBuffer(jsonValue)) // 
+    req.Header.Set("Content-Type","application/json; charset=UTF-8")
+    req.Header.Set("Cookie","sess_key="+getRouterSessKey())
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        print(err)
+    }
+
+    resBody, _ := ioutil.ReadAll(resp.Body)
+    res := gjson.ParseBytes(resBody)
+
+    if res.Get("Result").Int() == 30000 {
+        res.Get("Data.data").ForEach(func(key, value gjson.Result) bool {
+            values := map[string]interface{}{
+                "action": "kick",
+                "func_name": "ppp_online",
+                "param": map[string]int64{
+                    "id": value.Get("id").Int(),
+                },
+            }
+            jsonValue, _ := json.Marshal(values)
+            req, _ := http.NewRequest("POST", nas_http_endpoint + "/Action/call", bytes.NewBuffer(jsonValue)) // 
+            req.Header.Set("Content-Type","application/json; charset=UTF-8")
+            req.Header.Set("Cookie","sess_key="+getRouterSessKey())
+            _, err := http.DefaultClient.Do(req)
+            if err != nil {
+                print(err)
+            }
+            return true // keep iterating
+        })
+    } else if res.Get("Result").Int() == 10014 {
+        log.Println("[local][401]Web Login Token Expired, Retry")
+        sess_key = ""
+        kickMac(mac)
     }
 }
 
