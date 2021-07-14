@@ -48,8 +48,8 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
     res := gjson.Parse(string(msg.Payload()))
     log.Println("[mqtt][200]received msg: ",res)
 
-    // 先找到所有关于这个用户的mac，全部清理掉
     db.Update(func(tx *buntdb.Tx) error {
+        var delkeys []string
         tx.AscendEqual("Name", fmt.Sprintf(`{"Name":"%s"}`, res.Get("name").String()), func(key, value string) bool {
             macMatched := false
             res.Get("mac").ForEach(func(innerKey, mac gjson.Result) bool {
@@ -59,11 +59,17 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
                 return true
             })
             if macMatched == false {
-                tx.Delete(key)
+                delkeys = append(delkeys, key)
+                log.Printf("[local][200]Kick User: %s, Mac: %s\n", res.Get("name").String(), key)
                 kickMac(key)
             }
             return true
         })
+        for _, k := range delkeys {
+            if _, err := tx.Delete(k); err != nil {
+                return err
+            }
+        }
         return nil
     })
 
@@ -83,7 +89,8 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
         })
         return true // keep iterating
     })
-    // log.Println("Received message: %s from topic: %s", msg.Payload(), msg.Topic())
+
+    checkDeviceAuthStatus()
 }
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
