@@ -170,6 +170,10 @@ func auth(username string, password string, ip string, mac string) {
 }
 
 func syncNasClients() {
+    db.Update(func(tx *buntdb.Tx) error {
+        tx.DeleteAll()
+        return nil
+    })
     req, err := http.NewRequest("GET", "https://api-manage-radius.ik.weiyunjian.com/callback/client", nil)
     if err != nil {
         log.Println("[local][500]Init Request Error")
