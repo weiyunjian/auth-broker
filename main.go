@@ -73,22 +73,24 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
         return nil
     })
 
-    res.Get("mac").ForEach(func(key, mac gjson.Result) bool {
-        db.Update(func(tx *buntdb.Tx) error {
-            expiredAt, _ := carbon.Parse(carbon.DefaultFormat, res.Get("expired_at").String(), "Asia/Shanghai")
-            device := Device{
-                Name: res.Get("name").String(),
-                Mac: mac.String(),
-                Password: res.Get("password").String(),
-                ExpiredAt: res.Get("expired_at").String(),
-            }
-            jsonData, _ := json.Marshal(device)
-            tx.Set(mac.String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
-            // log.Println("add mac: %s\n", mac.String())
-            return nil
+    if res.Get("expired_at").Exists() {
+        res.Get("mac").ForEach(func(key, mac gjson.Result) bool {
+            db.Update(func(tx *buntdb.Tx) error {
+                expiredAt, _ := carbon.Parse(carbon.DefaultFormat, res.Get("expired_at").String(), "Asia/Shanghai")
+                device := Device{
+                    Name: res.Get("name").String(),
+                    Mac: mac.String(),
+                    Password: res.Get("password").String(),
+                    ExpiredAt: res.Get("expired_at").String(),
+                }
+                jsonData, _ := json.Marshal(device)
+                tx.Set(mac.String(), string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+                // log.Println("add mac: %s\n", mac.String())
+                return nil
+            })
+            return true // keep iterating
         })
-        return true // keep iterating
-    })
+    }
 
     checkDeviceAuthStatus()
 }
