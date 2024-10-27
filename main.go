@@ -12,16 +12,20 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 	"github.com/tidwall/buntdb"
 	"github.com/tidwall/gjson"
 	"github.com/uniplaces/carbon"
+	"golang.org/x/sync/semaphore"
 )
 
 var (
+	_                    = godotenv.Load()
 	nas_identifier       = os.Getenv("WYJ_NAS_IDENTIFIER")
 	nas_access_key       = os.Getenv("WYJ_NAS_ACCESS_KEY")
 	nas_http_endpoint    = os.Getenv("NAS_HTTP_ENDPOINT")
@@ -33,6 +37,8 @@ var (
 	httpClient           = http.Client{
 		Timeout: 30 * time.Second,
 	}
+	authSemaphore = semaphore.NewWeighted(10)
+	checkingDeviceAuthStatus int32 = 0
 )
 
 type Device struct {
@@ -127,7 +133,6 @@ func main() {
 	c := cron.New(cron.WithSeconds())
 	c.AddFunc("0 */30 * * * ?", syncNasClients)
 	c.AddFunc("0 */"+execute_interval_min+" * * * ?", checkDeviceAuthStatus)
-	checkDeviceAuthStatus()
 	c.Start()
 	wg.Add(1)
 	opts := mqtt.NewClientOptions()
@@ -409,36 +414,84 @@ func syncRouterAuthUsers() {
 }
 
 func checkDeviceAuthStatus() {
+	// 尝试将 checkingDeviceAuthStatus 从 0 设置为 1
+	if !atomic.CompareAndSwapInt32(&checkingDeviceAuthStatus, 0, 1) {
+		log.Println("[local][200]检查认证状态已在进行中，跳过本次调用")
+		return
+	}
+	defer atomic.StoreInt32(&checkingDeviceAuthStatus, 0)
+
+	// 初始化需要认证的设备列表
+	var devicesToAuth []Device
+
+	// 第一步：更新设备状态并收集需要认证的设备
 	db.Update(func(tx *buntdb.Tx) error {
 		tx.Ascend("", func(key, value string) bool {
 			device := Device{}
 			json.Unmarshal([]byte(value), &device)
 			device.Online = false
 			device.Auth = false
-			expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
 			jsonData, _ := json.Marshal(device)
-			tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+			tx.Set(key, string(jsonData), nil)
 			return true
 		})
 		return nil
 	})
+
 	syncRouterOnlineDevices()
 	syncRouterAuthUsers()
-	db.Update(func(tx *buntdb.Tx) error {
+
+	// 第二步：收集需要认证的设备
+	db.View(func(tx *buntdb.Tx) error {
 		tx.Ascend("", func(key, value string) bool {
 			device := Device{}
 			json.Unmarshal([]byte(value), &device)
 			if device.Online && !device.Auth && len(device.IP) > 0 {
-				auth(device.Name, device.Password, device.IP, device.Mac)
-				device.Auth = true
-				expiredAt, _ := carbon.Parse(carbon.DefaultFormat, device.ExpiredAt, "Asia/Shanghai")
-				jsonData, _ := json.Marshal(device)
-				tx.Set(key, string(jsonData), &buntdb.SetOptions{Expires: true, TTL: time.Duration(expiredAt.DiffInSeconds(nil, true)) * time.Second})
+				devicesToAuth = append(devicesToAuth, device)
 			}
-			// log.Println("key: %s, value: %s\n", key, value)
 			return true
 		})
 		return nil
 	})
-	log.Println("[local][200]Complete Check Auth Status")
+
+	// 第三步：异步认证设备
+	var wg sync.WaitGroup
+	authChan := make(chan Device, 10)
+
+	// 启动工作者
+	for i := 0; i < 10; i++ {
+		go func() {
+			for device := range authChan {
+				auth(device.Name, device.Password, device.IP, device.Mac)
+				wg.Done()
+			}
+		}()
+	}
+
+	// 发送认证任务
+	for _, device := range devicesToAuth {
+		wg.Add(1)
+		authChan <- device
+	}
+
+	// 关闭通道并等待所有认证完成
+	close(authChan)
+	wg.Wait()
+
+	// 第四步：更新认证状态
+	db.Update(func(tx *buntdb.Tx) error {
+		for _, device := range devicesToAuth {
+			existValue, err := tx.Get(device.Mac)
+			if err == nil {
+				updatedDevice := Device{}
+				json.Unmarshal([]byte(existValue), &updatedDevice)
+				updatedDevice.Auth = true
+				jsonData, _ := json.Marshal(updatedDevice)
+				tx.Set(device.Mac, string(jsonData), nil)
+			}
+		}
+		return nil
+	})
+
+	log.Println("[local][200]完成检查认证状态")
 }
